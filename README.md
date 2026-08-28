@@ -109,6 +109,20 @@ daemon, a card unbind that takes HDMI with it. Each one cost a session once.
 algorithm gates them out. Always use a frequency sweep of **≥ 5 seconds**, and treat any
 "silent" result from a burst as unproven.
 
+## Known issues, current as of the last recorded boot
+
+- **The ALSA card index moves.** With no USB audio device attached, `sof-soundwire` can
+  register as card 0 instead of card 1. Every path in this repo addresses the card by ID
+  (`hw:CARD=sofsoundwire`) for exactly this reason — if you're adapting fragments by hand,
+  do the same. Details: [docs/traps.md](docs/traps.md).
+- **One amplifier has been observed in a sustained firmware-download retry loop** — tens of
+  thousands of failed download attempts over ~20 minutes on one boot, status flapping
+  between `Attached` and `UNATTACHED`. Not yet explained, not yet seen a second time.
+  Details: [docs/investigation.md § 10.3](docs/investigation.md#103-amp-9-is-in-a-continuous-firmware-download-retry-storm-new-and-unexplained).
+
+See [docs/investigation.md § 10](docs/investigation.md#10-session-9-2026-08-28--observations-taken-while-distilling-this-into-a-repo)
+for the full, dated observation log this is drawn from.
+
 ---
 
 ## Layout
