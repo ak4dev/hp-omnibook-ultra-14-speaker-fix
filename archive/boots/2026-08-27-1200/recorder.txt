@@ -1,0 +1,100 @@
+boot        20260827-120219   kernel 7.1.9-arch1-2   uptime 107.19s
+
+== amplifiers ==
+  sdw:0:1:0102:0000:01:a           UNATTACHED  rt=error
+  sdw:0:1:0102:0000:01:d           Attached    rt=active
+  sdw:0:2:0102:0000:01:9           UNATTACHED  rt=error
+  sdw:0:2:0102:0000:01:c           Attached    rt=active
+  sdw:0:3:025d:0712:01             Attached    rt=suspended
+
+== verdict ==
+  amps attached      2 of 4
+  speaker PCM        1
+  cfg-amp            
+  assuming                                   SmartAmp
+  4                                          
+  Found                                      Smart
+  Amp                                        4
+  Direct                                     firmware
+  load                                       0
+  FW                                         download
+  failed                                     0
+  fw                                         with
+  no                                         files
+  0                                          
+  error                                      playback
+  without                                    fw
+  0                                          
+  Slave                                      status
+  change:                                    0x110
+  0                                          
+  still                                      UNATTACHED,
+  rescan                                     0
+  Slave                                      attached,
+  programming                                device
+  number                                     13
+  state                                      check1:
+  UNATTACHED                                 2
+
+== first 60 audio lines ==
+Aug 27 12:01:40 host kernel: input: PC Speaker as /devices/platform/pcspkr/input/input33
+Aug 27 12:01:40 host kernel: snd_soc_sdca: loading out-of-tree module taints kernel.
+Aug 27 12:01:40 host kernel: snd_soc_sdca: module verification failed: signature and/or required key missing - tainting kernel
+Aug 27 12:01:40 host kernel: sof-audio-pci-intel-ptl 0000:00:1f.3: SoundWire enabled on CannonLake+ platform, using SOF driver
+Aug 27 12:01:40 host kernel: sof-audio-pci-intel-ptl 0000:00:1f.3: enabling device (0000 -> 0002)
+Aug 27 12:01:40 host kernel: sof-audio-pci-intel-ptl 0000:00:1f.3: DSP detected with PCI class/subclass/prog-if 0x040100
+Aug 27 12:01:40 host kernel: sof-audio-pci-intel-ptl 0000:00:1f.3: bound 0000:00:02.0 (ops intel_audio_component_bind_ops [xe])
+Aug 27 12:01:40 host kernel: sof-audio-pci-intel-ptl 0000:00:1f.3: use msi interrupt mode
+Aug 27 12:01:40 host kernel: acpi PRP00001:00: Creating 5 SDW Link devices
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: doaise 0x1 doais 0x3 dodse 0x1 dods 0x0
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave Addr: 13a0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xa, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave Addr: 13d0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xd, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: Valid unique IDs 0xa 0xd for Slave mfg_id 0x0102, part_id 0x0000
+Aug 27 12:01:40 host kernel: acpi device:24: SDCA function SmartAmp (type 1) at 0x1
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave Addr: 13d0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xd, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave Addr: 13a0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xa, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: Valid unique IDs 0xd 0xa for Slave mfg_id 0x0102, part_id 0x0000
+Aug 27 12:01:40 host kernel: acpi device:26: SDCA function SmartAmp (type 1) at 0x1
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: doaise 0x1 doais 0x3 dodse 0x1 dods 0x0
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave Addr: 2390102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0x9, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave Addr: 23c0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xc, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: Valid unique IDs 0x9 0xc for Slave mfg_id 0x0102, part_id 0x0000
+Aug 27 12:01:40 host kernel: acpi device:20: SDCA function SmartAmp (type 1) at 0x1
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave Addr: 23c0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xc, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave Addr: 2390102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0x9, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-2: Valid unique IDs 0xc 0x9 for Slave mfg_id 0x0102, part_id 0x0000
+Aug 27 12:01:40 host kernel: acpi device:22: SDCA function SmartAmp (type 1) at 0x1
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-3: doaise 0x1 doais 0x3 dodse 0x1 dods 0x0
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-3: SDW Slave Addr: 330025d071201
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-3: SDW Slave class_id 0x01, mfg_id 0x025d, part_id 0x0712, unique_id 0x0, version 0x3
+Aug 27 12:01:40 host kernel: acpi device:28: SDCA function UAJ (type 6) at 0x1
+Aug 27 12:01:40 host kernel: acpi device:29: SDCA function SmartMic (type 3) at 0x2
+Aug 27 12:01:40 host kernel: acpi device:2a: SDCA function HID (type 10) at 0x3
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.1: clock source 0 LVSCTL 0x0
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.1: first link up, programming SYNCPRD
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.1: PCM cap bd:15 in:0 out:0
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.1: mclk 19200000 max 9600000 row 50 col 4
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.1: Slave status change: 0x2
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: Slave attached, programming device number
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave Addr: 3d0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xd, version 0x3
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave Addr: 3a0102000001
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: SDW Slave class_id 0x01, mfg_id 0x0102, part_id 0x0000, unique_id 0xa, version 0x3
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.2: clock source 0 LVSCTL 0x0
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.2: PCM cap bd:15 in:0 out:0
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.1: Msg ignored for Slave 0
+Aug 27 12:01:40 host kernel: soundwire sdw-master-0-1: No more devices to enumerate
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.1: Slave status change: 0x221
+Aug 27 12:01:40 host kernel: soundwire sdw:0:1:0102:0000:01:d: signaling enumeration completion for Slave 1
+Aug 27 12:01:40 host kernel: soundwire sdw:0:1:0102:0000:01:d: Configured bus base 1, scale 2, mclk 19200000, curr_freq 9600000
+Aug 27 12:01:40 host kernel: soundwire_intel soundwire_intel.link.2: mclk 19200000 max 9600000 row 50 col 4
+Aug 27 12:01:40 host kernel: soundwire sdw:0:1:0102:0000:01:d: signaling initialization completion for Slave 1
+grep: write error: Broken pipe

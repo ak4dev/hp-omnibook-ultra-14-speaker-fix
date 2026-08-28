@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# omnibook-speaker-fix: restore the internal-speaker mixer state at session start.
+#
+# The TAS2783 amp controls ("tas2783-N Speaker Volume", "Left/Right Spk[2] Switch")
+# are registered by the codec components when the sof-soundwire card binds, which
+# happens ~22 s into boot -- after this unit may first run.  Wait for one of them to
+# exist before restoring, then bail rather than hang if the card never appears.
+#
+# Root-free by design: alsactl writes to a state file under ~/.config, not to
+# /var/lib/alsa/asound.state, so no privilege is needed and the system-wide
+# alsa-restore.service is left alone.
+#
+# The card is addressed by ID, never by index -- the index moves depending on what
+# else is present at boot.  See docs/traps.md "the card index is not stable".
+set -uo pipefail
+
+: "${OMNIBOOK_ASOUND_STATE:=$HOME/.config/omnibook-speaker/asound.state}"
+: "${OMNIBOOK_SPEAKER_CARD:=sofsoundwire}"
+
+[[ -f $OMNIBOOK_ASOUND_STATE ]] || {
+    echo "no state file: $OMNIBOOK_ASOUND_STATE" >&2; exit 0; }
+
+for _ in $(seq 1 60); do
+    amixer -c "$OMNIBOOK_SPEAKER_CARD" controls 2>/dev/null | grep -q 'Spk' && break
+    sleep 1
+done
+
+amixer -c "$OMNIBOOK_SPEAKER_CARD" controls 2>/dev/null | grep -q 'Spk' || {
+    echo "card $OMNIBOOK_SPEAKER_CARD has no speaker controls; nothing to restore" >&2
+    exit 0
+}
+
+# Tolerate a partial restore rather than failing the unit.  If a boot loses all four
+# amplifiers the SmartAmp dailink is dropped and the tas2783-N controls do not exist, so
+# alsactl exits non-zero for the entries it could not apply.  That is expected, not an
+# error worth a failed unit at every session start -- the DAPM pin switches and whatever
+# else does exist still get restored.
+if ! alsactl --file "$OMNIBOOK_ASOUND_STATE" restore "$OMNIBOOK_SPEAKER_CARD"; then
+    echo "alsactl restore was partial (some controls absent); continuing" >&2
+fi
+exit 0

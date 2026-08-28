@@ -1,0 +1,21 @@
+[Unit]
+Description=Load the TAS2783 SoundWire amplifier driver after the SOF DSP has booted
+# Needs journald readable (we watch for the DSP boot line) and udev settled, so the
+# SOF PCI driver has had its chance to probe. Deliberately NOT DefaultDependencies=no:
+# running this in early boot risks a 30 s stall before journald can answer.
+After=systemd-journald.service systemd-udev-settle.service
+Before=sound.target
+Wants=sound.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# See docs/defects.md defect 3: the RATIONALE for this deferral was disproven in
+# session 5, but whether removing it helps or hurts has never been established.
+# It is installed on the reference machine and left alone.
+ExecStart=/usr/bin/omnibook-tas2783-late
+# Never let this block boot: worst case the amps stay silent, as they would anyway.
+TimeoutStartSec=45
+
+[Install]
+WantedBy=multi-user.target

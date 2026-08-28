@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Arm / disarm dynamic debug for the SoundWire stack, and report the enumeration trace.
+#
+# The enumeration window is dark by default: everything that explains WHY a peripheral
+# is or is not enumerated is dev_dbg.  Arming costs one reboot and is reverted by
+# deleting one file.  Nothing else changes; dyndbg is log volume only.
+#
+#   sudo omnibook-sdw-trace arm      install the modprobe.d drop-in, then reboot
+#   sudo omnibook-sdw-trace disarm   remove it
+#   omnibook-sdw-trace report        read the trace out of a boot (no root)
+#   omnibook-sdw-trace state         one-line status of every peripheral (no root)
+set -uo pipefail
+
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+CONF=${OMNIBOOK_DEBUG_CONF:-/etc/modprobe.d/omnibook-sdw-debug.conf}
+SRC=$HERE/../userspace/modprobe.d/omnibook-sdw-debug.conf
+CARD=sofsoundwire
+
+state() {
+  echo "== peripherals =="
+  for d in /sys/bus/soundwire/devices/sdw:0:*/; do
+    [[ -e $d/status ]] || continue
+    printf '  %-32s status=%-11s rt=%s\n' "$(basename "$d")" \
+      "$(cat "$d/status" 2>/dev/null)" "$(cat "$d/power/runtime_status" 2>/dev/null)"
+  done
+  echo "== links =="
+  for d in /sys/bus/pci/drivers/sof-audio-pci-intel-ptl/*/soundwire_intel.link.*/; do
+    [[ -d $d ]] || continue
+    printf '  %-18s rt=%s\n' "$(basename "$d")" "$(cat "$d/power/runtime_status" 2>/dev/null)"
+  done
+  echo "== card =="
+  # By ID, never by index: the index moves depending on what else is present at boot.
+  # `aplay -l` prints "card N: <id> [<name>]", so match the id in the "card N:" field.
+  aplay -l 2>/dev/null | grep -E "^card [0-9]+: $CARD " | sed 's/^/  /' \
+    || echo "  no $CARD card"
+  # There is no /proc/asound/card*/components on this kernel; the string lives in the
+  # ALSA card info.  `amixer info` reads it without needing a PipeWire session, so this
+  # works from a root shell and from a boot-time unit.
+  printf '  components:%s\n' \
+    "$(amixer -c "$CARD" info 2>/dev/null | sed -n "s/^  Components\t: '\\(.*\\)'/ \\1/p")"
+}
+
+report() {
+  # Strip the host field rather than matching one hostname: the previous version of
+  # this script had the reference machine's hostname baked into the sed, which both
+  # leaked it and silently did nothing on any other box.
+  journalctl -k -b "${1:-0}" --no-pager -o short-precise 2>/dev/null | grep -E \
+    "Booted firmware version|hda_sdw|Slave attached, programming|SDW Slave class_id|SDW Slave Addr|No more devices to enumerate|Device0 detected|Peripheral [0-9]+ status|Assign dev_num|Program device_num|DEVID read fail|Msg NACK|initialization completion|Found Smart Amp|initialization timed out|ping_status|no peripherals attached|FW download|fw with no files|Slave [0-9]+ initialization|dropping its SmartAmp endpoint|PM: suspend (entry|exit)" \
+    | sed -E 's/^([0-9T:.+-]+) [^ ]+ kernel:/\1 |/'
+}
+
+case "${1:-state}" in
+  arm)
+    [[ $EUID -eq 0 ]] || { echo "run me with sudo" >&2; exit 1; }
+    [[ -f $SRC ]] || { echo "missing $SRC" >&2; exit 1; }
+    install -Dm644 "$SRC" "$CONF"
+    echo "armed: $CONF"
+    echo "now: reboot, then 'omnibook-sdw-trace report'"
+    ;;
+  disarm)
+    [[ $EUID -eq 0 ]] || { echo "run me with sudo" >&2; exit 1; }
+    rm -f "$CONF" && echo "disarmed: $CONF removed (takes effect next boot)"
+    ;;
+  report) report "${2:-0}" ;;
+  state)  state ;;
+  *) echo "usage: $0 {arm|disarm|report [boot]|state}" >&2; exit 2 ;;
+esac

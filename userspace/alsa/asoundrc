@@ -1,0 +1,39 @@
+# omnibook-speaker-fix: the internal TAS2783 laptop speakers.
+#
+# Install as ~/.asoundrc (or append to an existing one).
+#
+# WHY THIS PCM EXISTS
+# Both surviving amplifiers read SoundWire stream channel 0.  Measured 2026-08-27
+# on the reference machine: a sweep in the LEFT channel of the Speaker PCM is
+# audible from both live amps, a sweep in the RIGHT channel is silent.  So a plain
+# stereo open throws away every right-channel sample.  This PCM keeps a normal
+# 2-channel interface for applications and sums both channels into hardware
+# channel 0 -- the one the amplifiers actually read -- at -6 dB each, so a
+# correlated mix cannot clip.
+#
+# The ttable index order is ttable.<client>.<slave>, confirmed against
+# /usr/share/alsa/cards/ATIIXP-MODEM.conf, which routes client channel 0 to slave
+# channel 1 as ttable.0.1.
+#
+# WHY hw:CARD=sofsoundwire AND NOT hw:1
+# The card index is not stable.  It depends on what else is present at boot: with
+# a USB headset attached, sof-soundwire is card 1; without it, card 0.  On
+# 2026-08-28 the machine booted with no USB audio, sof-soundwire took index 0, and
+# every hardcoded "hw:1,2" in this fix silently pointed at nothing -- no speaker
+# sink at all.  The card *id* (`sofsoundwire`, from /proc/asound/cards) does not
+# move.  Always address the card by id.
+#
+# Device 2 is the Speaker PCM; devices 0/31 are the headset jack and 5-7 are HDMI.
+#
+# Revisit if the amplifier situation changes: if all four amps ever come up, or a
+# kernel change gives the survivors distinct channel masks, re-run the per-channel
+# sweep test and go back to a straight stereo open.
+pcm.omnibook_spk {
+    type plug
+    slave.pcm {
+        type route
+        slave { pcm "hw:CARD=sofsoundwire,DEV=2" channels 2 }
+        ttable.0.0 0.5
+        ttable.1.0 0.5
+    }
+}

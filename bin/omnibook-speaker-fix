@@ -1,0 +1,505 @@
+#!/usr/bin/env bash
+# omnibook-speaker-fix -- dead internal speakers on HP Panther Lake laptops with TI
+# TAS2783 SoundWire amplifiers (board id 8EB4 and siblings).
+#
+# Portable: every board-specific value -- PCI subsystem id, link numbers, unique ids,
+# card index -- is derived at runtime.  Nothing here is hardcoded to one machine.
+#
+#   omnibook-speaker-fix check       what this machine needs (no changes, no root)
+#   omnibook-speaker-fix firmware    defect 2: firmware name symlinks
+#   omnibook-speaker-fix sdca        defect 1: build + install patched snd-soc-sdca
+#   omnibook-speaker-fix sdw-utils   defect 4 workaround: drop dead amp endpoints
+#   omnibook-speaker-fix trace       widen the boot dyndbg so the next boot is measurable
+#   omnibook-speaker-fix recorder    install the per-boot verdict recorder
+#   omnibook-speaker-fix install     the SAFE set: all five of the above
+#   omnibook-speaker-fix userspace   the sink, the channel summing, the mixer restore
+#                                    (NO ROOT -- run as your normal user, after a reboot)
+#   omnibook-speaker-fix verify      read the current boot log and report
+#   omnibook-speaker-fix revert      undo everything
+#
+# Two EXPERIMENTAL module swaps are deliberately NOT part of `install`.  Each can cost
+# the whole sound card until it is reverted and the machine rebooted.  Read
+# docs/experiments.md before running either.
+#
+#   omnibook-speaker-fix cadence     re-armed soundwire-cadence.ko (rescan retry)
+#   omnibook-speaker-fix sof-order   start the SoundWire links from post_fw_run
+#   omnibook-speaker-fix defer       install the defect-3 deferral
+#   omnibook-speaker-fix undefer     remove it (its RATIONALE is disproven; whether
+#                                    removing it helps is NOT established)
+set -euo pipefail
+
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd -- "$HERE/.." && pwd)
+KVER=$(uname -r)
+KDIR=/lib/modules/$KVER/build
+FWDIR=/usr/lib/firmware/updates
+SDW=/sys/bus/soundwire/devices
+WORK=${OMNIBOOK_SPK_WORK:-/var/tmp/omnibook-speaker-fix}
+CARD=sofsoundwire
+TI_MFG=0102
+TI_PART=0000
+
+SDCA_DIR=/lib/modules/$KVER/kernel/sound/soc/sdca
+SDCA_KO=$SDCA_DIR/snd-soc-sdca.ko.zst
+SDWU_DIR=/lib/modules/$KVER/kernel/sound/soc/sdw_utils
+SDWU_KO=$SDWU_DIR/snd-soc-sdw-utils.ko.zst
+SDWDIR=/lib/modules/$KVER/kernel/drivers/soundwire
+CDNS=$SDWDIR/soundwire-cadence.ko.zst
+SOFDIR=/lib/modules/$KVER/kernel/sound/soc/sof/intel
+
+MODPROBE_CONF=/etc/modprobe.d/omnibook-tas2783-defer.conf
+DEBUG_CONF=/etc/modprobe.d/omnibook-sdw-debug.conf
+LATE_UNIT=/etc/systemd/system/omnibook-tas2783-late.service
+LATE_BIN=/usr/bin/omnibook-tas2783-late
+RECUNIT=/etc/systemd/system/omnibook-speaker-report.service
+RECBIN=/usr/bin/omnibook-speaker-report
+RECLOG=/var/log/omnibook-speaker
+
+say()  { printf '\033[1m%s\033[0m\n' "$*"; }
+warn() { printf '  ! %s\n' "$*" >&2; }
+ok()   { printf '  + %s\n' "$*"; }
+need_root() { [[ $EUID -eq 0 ]] || { echo "this subcommand needs root: sudo $0 $*" >&2; exit 1; }; }
+no_root()   { [[ $EUID -ne 0 ]] || { echo "run this one as your normal user, NOT with sudo" >&2; exit 1; }; }
+
+# Read this boot's kernel log ONCE into a variable.  Never pipe journalctl into
+# `grep -q`: grep exits on the first match, journalctl dies of SIGPIPE (141), and
+# `set -o pipefail` turns that into a false negative -- intermittently, depending on
+# whether journalctl finished writing first.
+KLOG=""
+klog_load() { [[ -n $KLOG ]] || KLOG=$(journalctl -k -b 0 --no-pager 2>/dev/null || true); }
+klog_has()  { klog_load; grep -q -- "$1" <<<"$KLOG"; }
+klog_count(){ klog_load; grep -c -- "$1" <<<"$KLOG" || true; }
+
+# --- discovery -------------------------------------------------------------------
+
+amps() {  # prints: <sysfs-name> <link> <uid>
+  local d n link uid
+  for d in "$SDW"/sdw:0:*:"$TI_MFG":"$TI_PART":*; do
+    [[ -e $d ]] || continue
+    n=$(basename "$d")
+    IFS=: read -r _ _ link _ _ _ uid <<<"$n"
+    printf '%s %s %s\n' "$n" "$link" "${uid^^}"
+  done
+}
+
+subsys_id() {  # PCI subsystem device id of the audio controller, uppercase hex, no 0x
+  local f dev v
+  for f in /sys/bus/pci/devices/*/subsystem_device; do
+    dev=${f%/subsystem_device}
+    [[ $(cat "$dev/class" 2>/dev/null) == 0x040100 ]] || continue
+    v=$(cat "$f"); printf '%04X\n' "$v"; return 0
+  done
+  return 1
+}
+
+# The card index is NOT stable -- it depends on what else is present at boot.  Resolve
+# by ID.  On 2026-08-28 the reference machine booted with no USB audio, sof-soundwire
+# took index 0 instead of 1, and every hardcoded hw:1 in this fix pointed at nothing.
+card_index() { sed -n "s/^ *\([0-9]\+\) \[$CARD *\].*/\1/p" /proc/asound/cards 2>/dev/null | head -1; }
+
+# Swap one compressed module in place without ever leaving a truncated file where the
+# kernel will look for it: compress to a temp path, verify the archive AND the module
+# metadata, keep the pristine module as .stock exactly once, then rename into place.
+# $1 = destination .ko.zst, $2 = freshly built .ko
+install_module() {
+  local dest=$1 built=$2 tmp="$1.new" vm
+  [[ -f $built ]] || { warn "no module at $built"; return 1; }
+  vm=$(modinfo "$built" | sed -n 's/^vermagic: *//p')
+  [[ $vm == "$KVER"* ]] || { warn "vermagic mismatch: '$vm' is not $KVER"; return 1; }
+  zstd -q -f -19 "$built" -o "$tmp" || { warn "compress failed"; rm -f "$tmp"; return 1; }
+  zstd -t "$tmp" 2>/dev/null || { warn "the compressed module does not verify"; rm -f "$tmp"; return 1; }
+  if [[ ! -f $dest.stock ]]; then
+    cp -a "$dest" "$dest.stock" || { warn "could not keep a stock copy"; rm -f "$tmp"; return 1; }
+    ok "kept stock $(basename "$dest") as .stock"
+  fi
+  mv -f "$tmp" "$dest"
+  ok "installed $(basename "$dest") ($(stat -c%s "$dest") bytes)"
+}
+
+restore_module() {
+  local dest=$1
+  [[ -f $dest.stock ]] || return 0
+  mv -f "$dest.stock" "$dest"; ok "restored stock $(basename "$dest")"
+}
+
+# Fetch one kernel subdirectory's sources for the running kernel's base version.
+# $1 = subdir under the kernel tree, $2 = destination, rest = file names
+fetch_sources() {
+  local sub=$1 dest=$2; shift 2
+  local tag="v${KVER%%-*}" f
+  local url="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/$sub"
+  rm -rf "$dest"; mkdir -p "$dest"
+  for f in "$@"; do
+    curl -fsSL --max-time 60 "$url/$f?h=$tag" -o "$dest/$f" 2>/dev/null \
+      && ok "$f" || warn "$f not present at $tag (may be fine)"
+  done
+}
+
+# --- check -----------------------------------------------------------------------
+
+cmd_check() {
+  say "machine"
+  printf '  %s / %s\n' "$(cat /sys/class/dmi/id/product_name 2>/dev/null)" \
+                       "$(cat /sys/class/dmi/id/board_name 2>/dev/null)"
+  printf '  kernel %s\n' "$KVER"
+  local sid; sid=$(subsys_id) || { warn "no HDA/SOF audio controller found -- not affected"; return 1; }
+  printf '  audio controller PCI subsystem id %s\n' "$sid"
+  printf '  %s = card %s\n' "$CARD" "$(card_index || echo '<absent>')"
+
+  say "TAS2783 amplifiers"
+  local n=0
+  while read -r name link uid; do
+    [[ -n ${name:-} ]] || continue
+    printf '  %-32s link %s uid %s  status=%s rt=%s\n' "$name" "$link" "$uid" \
+      "$(cat "$SDW/$name/status" 2>/dev/null)" \
+      "$(cat "$SDW/$name/power/runtime_status" 2>/dev/null)"
+    n=$((n+1))
+  done < <(amps)
+  [[ $n -gt 0 ]] || { warn "no TAS2783 peripherals -- this fix does not apply"; return 1; }
+
+  say "defect 1 -- SDCA function type (ACPI/BIOS)"
+  if klog_has "function type only supported as DisCo constant"; then
+    warn "AFFECTED: BIOS omits mipi-sdca-control-dc-value; amps are dropped"
+    warn "  fix: sudo $0 sdca"
+  elif klog_has "assuming SmartAmp"; then
+    ok "patched module active ($(klog_count 'assuming SmartAmp') x assuming SmartAmp)"
+  else
+    ok "not affected (or amps already parse)"
+  fi
+
+  say "defect 2 -- firmware file naming"
+  local missing=0 want
+  while read -r name link uid; do
+    [[ -n ${name:-} ]] || continue
+    want="$sid-$link-$uid.bin"
+    if compgen -G "$FWDIR/$want*" >/dev/null || compgen -G "/usr/lib/firmware/$want*" >/dev/null; then
+      ok "$want resolves"
+    else
+      warn "$want MISSING (linux-firmware ships ${sid}-${link}-0x${uid}.bin)"; missing=$((missing+1))
+    fi
+  done < <(amps)
+  if [[ $missing -eq 0 ]]; then
+    ok "nothing to link -- on kernels >= 7.2 this defect is fixed upstream (e26bb459d0f3)"
+  else
+    warn "$missing name(s) need symlinks -- run: sudo $0 firmware"
+  fi
+
+  say "defect 4 -- amplifiers leave the bus during the DSP firmware boot"
+  local dead=0
+  while read -r name link uid; do
+    [[ -n ${name:-} ]] || continue
+    [[ $(cat "$SDW/$name/status" 2>/dev/null) == Attached ]] || dead=$((dead+1))
+  done < <(amps)
+  if [[ $dead -eq 0 ]]; then
+    ok "every amplifier is Attached -- the workaround is not needed"
+  else
+    warn "AFFECTED: $dead of $n amplifier(s) are off the bus"
+    if klog_has "dropping its SmartAmp endpoint"; then
+      ok "endpoint filter active ($(klog_count 'dropping its SmartAmp endpoint') endpoint(s) dropped)"
+    else
+      warn "  without the filter one dead amp aborts the Speaker PCM open for ALL of them"
+      warn "  fix: sudo $0 sdw-utils"
+    fi
+  fi
+
+  say "result"
+  local pcms; pcms=$(aplay -l 2>/dev/null || true)
+  if grep -qi 'device 2: Speaker' <<<"$pcms"; then
+    ok "a Speaker PCM exists"; grep -i speaker <<<"$pcms" | sed 's/^/    /'
+  else
+    warn "no Speaker PCM"
+  fi
+  if [[ -n $(card_index) ]] && pactl list short sinks 2>/dev/null | grep -q omnibook-laptop-speaker; then
+    ok "the \"Laptop Speakers\" sink is present"
+  else
+    warn "no \"Laptop Speakers\" sink -- run: $0 userspace   (as your normal user)"
+  fi
+}
+
+# --- defect 2: firmware symlinks -------------------------------------------------
+#
+# Linux <= 7.1 builds the name %04X-%1X-%1X.bin from the audio controller's PCI
+# subsystem id, the SoundWire link and the peripheral's unique id -- 8EB4-1-A.bin.
+# linux-firmware ships it as 8EB4-1-0xA.bin.zst.  Every load returns -ENOENT, the amp
+# DSP is never programmed, and tas_sdw_hw_params() then refuses playback with -EINVAL.
+#
+# /usr/lib/firmware/updates is the firmware loader's own override directory, ahead of
+# /usr/lib/firmware in fw_path[] and owned by no package.  This only ever ADDS LINKS,
+# never touches a shipped blob, and is a no-op once the plain name resolves -- so it
+# stands down by itself on 7.2+, where e26bb459d0f3 asks for the 0x name and falls back.
+cmd_firmware() {
+  need_root firmware
+  local sid; sid=$(subsys_id)
+  install -d -m 0755 "$FWDIR"
+  local made=0 plain real ext link_path
+  while read -r name link uid; do
+    [[ -n ${name:-} ]] || continue
+    plain="$sid-$link-$uid.bin"; real=
+    for ext in .zst .xz ''; do
+      real="/usr/lib/firmware/ti/audio/tas2783/${sid}-${link}-0x${uid}.bin${ext}"
+      [[ -e $real ]] && break || real=
+    done
+    [[ -n ${real:-} ]] || { warn "no shipped blob for $sid-$link-0x$uid -- skipping"; continue; }
+    ext=${real##*.bin}; link_path="$FWDIR/${plain}${ext}"
+    if [[ -L $link_path ]]; then ok "$(basename "$link_path") already linked"; continue; fi
+    ln -sfn "../ti/audio/tas2783/$(basename "$real")" "$link_path"
+    ok "linked $(basename "$link_path")"; made=$((made+1))
+  done < <(amps)
+  [[ $made -eq 0 ]] || say "created $made link(s) -- they survive reboots and linux-firmware upgrades"
+}
+
+# --- defect 1: patched SDCA module ------------------------------------------------
+
+cmd_sdca() {
+  need_root sdca
+  [[ -d $KDIR ]] || { echo "kernel headers missing: $KDIR (install linux-headers)" >&2; exit 1; }
+  command -v make >/dev/null || { echo "need 'make' and a compiler" >&2; exit 1; }
+
+  say "fetching sound/soc/sdca/ for v${KVER%%-*}"
+  fetch_sources sound/soc/sdca "$WORK/sdca" \
+    sdca_functions.c sdca_device.c sdca_function_device.c sdca_regmap.c sdca_asoc.c \
+    sdca_ump.c sdca_hid.c sdca_interrupts.c sdca_jack.c sdca_fdl.c \
+    sdca_class.c sdca_class_function.c sdca_class.h sdca_function_device.h
+  [[ -s $WORK/sdca/sdca_functions.c ]] || { echo "could not fetch sdca_functions.c" >&2; exit 1; }
+
+  say "applying the SmartAmp patch"
+  ( cd "$WORK/sdca" && patch -p4 --forward --batch \
+      < "$REPO/kernel/sdca/0001-sdca-assume-smartamp-for-ti-without-disco-constant.patch" ) \
+    || { echo "patch did not apply cleanly -- see docs/porting.md" >&2; exit 1; }
+
+  cp "$REPO/kernel/sdca/Makefile" "$WORK/sdca/Makefile"
+  say "building"
+  make -C "$KDIR" M="$WORK/sdca" modules
+  install_module "$SDCA_KO" "$WORK/sdca/snd-soc-sdca.ko" || exit 1
+  depmod -a "$KVER"
+  say "reboot for this to take effect"
+}
+
+# --- defect 4 workaround: the endpoint filter --------------------------------------
+#
+# THIS IS THE STEP THAT MAKES SOUND.  One or more amplifiers leave the bus during the
+# DSP firmware boot and never return.  ACPI still describes them, so they still become
+# codec components of the aggregated SmartAmp BE, and one dead amp's latched
+# runtime_error makes the WHOLE Speaker PCM fail to open -- including the amps that are
+# alive with firmware loaded.  Dropping the dead endpoints lets the survivors play.
+cmd_sdw_utils() {
+  need_root sdw-utils
+  [[ -d $KDIR ]] || { echo "kernel headers missing: $KDIR (install linux-headers)" >&2; exit 1; }
+
+  say "fetching sound/soc/sdw_utils/ for v${KVER%%-*}"
+  fetch_sources sound/soc/sdw_utils "$WORK/sdw_utils" \
+    soc_sdw_utils.c soc_sdw_dmic.c soc_sdw_rt_dmic.c soc_sdw_rt700.c soc_sdw_rt711.c \
+    soc_sdw_rt5682.c soc_sdw_rt_sdca_jack_common.c soc_sdw_rt_amp.c soc_sdw_rt_mf_sdca.c \
+    soc_sdw_bridge_cs35l56.c soc_sdw_cs42l42.c soc_sdw_cs42l43.c soc_sdw_cs42l45.c \
+    soc_sdw_cs47l47.c soc_sdw_cs_amp.c soc_sdw_maxim.c soc_sdw_ti_amp.c
+  [[ -s $WORK/sdw_utils/soc_sdw_utils.c ]] || { echo "could not fetch soc_sdw_utils.c" >&2; exit 1; }
+
+  say "applying the endpoint filter patch"
+  ( cd "$WORK/sdw_utils" && patch -p4 --forward --batch \
+      < "$REPO/kernel/sdw-utils/0001-sdw-utils-drop-unattached-smartamp-endpoints.patch" ) \
+    || { echo "patch did not apply cleanly -- see docs/porting.md" >&2; exit 1; }
+
+  cp "$REPO/kernel/sdw-utils/Makefile" "$WORK/sdw_utils/Makefile"
+  say "building"
+  make -C "$KDIR" M="$WORK/sdw_utils" modules
+  install_module "$SDWU_KO" "$WORK/sdw_utils/snd-soc-sdw-utils.ko" || exit 1
+  depmod -a "$KVER"
+  ok "module parameter: filter_unattached_amps=Y (set N to disable without reverting)"
+  say "reboot for this to take effect"
+}
+
+# --- the trace and the recorder ----------------------------------------------------
+
+cmd_trace() {
+  need_root trace
+  install -Dm644 "$REPO/userspace/modprobe.d/omnibook-sdw-debug.conf" "$DEBUG_CONF"
+  ok "wrote $DEBUG_CONF"
+  say "takes effect at the next boot"
+}
+
+cmd_recorder() {
+  need_root recorder
+  mkdir -p "$RECLOG"
+  install -Dm755 "$REPO/bin/omnibook-speaker-report" "$RECBIN"; ok "wrote $RECBIN"
+  install -Dm644 "$REPO/userspace/systemd/system/omnibook-speaker-report.service" "$RECUNIT"
+  ok "wrote $RECUNIT"
+  systemctl daemon-reload
+  systemctl enable omnibook-speaker-report.service >/dev/null
+  ok "enabled omnibook-speaker-report.service -> $RECLOG/latest.txt"
+}
+
+# --- the userspace last mile (no root) ----------------------------------------------
+#
+# The kernel half gives you a Speaker PCM.  It does NOT give you a sink: PipeWire's ACP
+# layer builds no HiFi profile for this card, so the card sits at profile "off".  These
+# three files are what turn the PCM into a working default sink.  See docs/userspace.md.
+cmd_userspace() {
+  no_root
+  local u=$REPO/userspace
+  local pw=$HOME/.config/pipewire/pipewire.conf.d
+  local sd=$HOME/.config/systemd/user
+  local bin=$HOME/.local/bin
+
+  if [[ -e $HOME/.asoundrc ]] && ! grep -q 'pcm.omnibook_spk' "$HOME/.asoundrc"; then
+    warn "$HOME/.asoundrc exists and has no omnibook_spk -- append $u/alsa/asoundrc by hand"
+  else
+    install -Dm644 "$u/alsa/asoundrc" "$HOME/.asoundrc"; ok "~/.asoundrc (pcm.omnibook_spk)"
+  fi
+
+  install -Dm644 "$u/pipewire/50-omnibook-laptop-speaker.conf" \
+                 "$pw/50-omnibook-laptop-speaker.conf"
+  ok "$pw/50-omnibook-laptop-speaker.conf"
+
+  install -Dm644 "$u/systemd/user/pipewire.service.d-10-omnibook-wait-for-card.conf" \
+                 "$sd/pipewire.service.d/10-omnibook-wait-for-card.conf"
+  ok "$sd/pipewire.service.d/10-omnibook-wait-for-card.conf"
+
+  install -Dm755 "$REPO/bin/omnibook-speaker-mixer" "$bin/omnibook-speaker-mixer"
+  install -Dm755 "$REPO/bin/omnibook-ucm-overlay"   "$bin/omnibook-ucm-overlay"
+  install -Dm644 "$u/systemd/user/omnibook-speaker-mixer.service" \
+                 "$sd/omnibook-speaker-mixer.service"
+  ok "$bin/omnibook-speaker-mixer + its user unit"
+
+  systemctl --user daemon-reload
+  systemctl --user enable omnibook-speaker-mixer.service >/dev/null 2>&1 || true
+  ok "enabled omnibook-speaker-mixer.service"
+
+  say "log out and back in (or reboot) -- do NOT restart pipewire/wireplumber by hand"
+  warn "restarting the audio stack while the speaker node holds the PCM can wedge it,"
+  warn "and only a reboot clears that.  See docs/traps.md."
+  say ""
+  say "There is no mixer state file yet.  Once the speakers work, save one:"
+  say "  alsactl --file ~/.config/omnibook-speaker/asound.state store $CARD"
+}
+
+# --- defect 3: the deferral (rationale disproven, kept for now) ---------------------
+
+cmd_defer() {
+  need_root defer
+  install -Dm644 "$REPO/userspace/modprobe.d/omnibook-tas2783-defer.conf" "$MODPROBE_CONF"
+  install -Dm755 "$REPO/bin/omnibook-tas2783-late" "$LATE_BIN"
+  install -Dm644 "$REPO/userspace/systemd/system/omnibook-tas2783-late.service" "$LATE_UNIT"
+  systemctl daemon-reload
+  systemctl enable omnibook-tas2783-late.service >/dev/null
+  ok "deferral installed and enabled"
+  warn "its RATIONALE is disproven (docs/defects.md defect 3); the effect is unmeasured"
+  say "reboot for this to take effect"
+}
+
+undefer() {
+  local did=0
+  [[ -f $MODPROBE_CONF ]] && { rm -f "$MODPROBE_CONF"; ok "removed $MODPROBE_CONF"; did=1; }
+  if [[ -f $LATE_UNIT ]]; then
+    systemctl disable --now omnibook-tas2783-late.service 2>/dev/null || true
+    rm -f "$LATE_UNIT" "$LATE_BIN"
+    systemctl daemon-reload
+    ok "removed omnibook-tas2783-late.service"; did=1
+  fi
+  (( did )) || ok "no deferral installed"
+}
+
+cmd_undefer() { need_root undefer; undefer; say "reboot for this to take effect"; }
+
+# --- experiments (see docs/experiments.md) ------------------------------------------
+
+cmd_cadence() {
+  need_root cadence
+  [[ -d $KDIR ]] || { warn "no kernel build tree at $KDIR"; return 1; }
+  say "fetching drivers/soundwire/ for v${KVER%%-*}"
+  fetch_sources drivers/soundwire "$WORK/cadence" cadence_master.c cadence_master.h bus.h
+  ( cd "$WORK/cadence" && patch -p3 --forward --batch \
+      < "$REPO/kernel/cadence/0001-sdw-cadence-rearm-attach-rescan.patch" ) \
+    || { warn "patch did not apply cleanly"; return 1; }
+  cp "$REPO/kernel/cadence/Makefile" "$WORK/cadence/Makefile"
+  make -C "$KDIR" M="$WORK/cadence" modules >/dev/null || { warn "build failed"; return 1; }
+  install_module "$CDNS" "$WORK/cadence/soundwire-cadence.ko" || return 1
+  depmod -a "$KVER"
+  say "reboot for this to take effect -- be at the console, this can cost the card"
+}
+
+cmd_sof_order() {
+  need_root sof-order
+  warn "this can cost the ENTIRE sound card until it is reverted and rebooted."
+  warn "do not run it unless you can be at the console. See docs/experiments.md."
+  if [[ ${OMNIBOOK_SPK_YES:-} != 1 ]]; then
+    read -r -p "  type 'yes' to continue: " a; [[ $a == yes ]] || { say "aborted"; return 1; }
+  fi
+  warn "not wired up: this experiment needs a full sound/soc/sof/intel tree, which this"
+  warn "repo does not vendor.  The patch is at kernel/sof-sdw-order/ -- build it by hand."
+  return 1
+}
+
+# --- verify / revert ---------------------------------------------------------------
+
+cmd_verify() {
+  say "this boot"
+  klog_load
+  grep -iE "DisCo constant|assuming SmartAmp|Found Smart Amp|Direct firmware load|FW download|fw with no files|Booted firmware version|error playback without fw|dropping its SmartAmp endpoint" \
+    <<<"$KLOG" | sed 's/^/  /' || echo "  (nothing matched)"
+  say "amplifier status"
+  while read -r name link uid; do
+    [[ -n ${name:-} ]] || continue
+    printf '  %-32s %s\n' "$name" "$(cat "$SDW/$name/status" 2>/dev/null)"
+  done < <(amps)
+  say "PCMs"; aplay -l 2>/dev/null | sed 's/^/  /'
+  say "sinks"; pactl list short sinks 2>/dev/null | sed 's/^/  /' || echo "  (no pipewire)"
+  say "DAPM pin switches (all four should read 'on')"
+  amixer -c "$CARD" controls 2>/dev/null | grep 'Spk.*Switch' | while read -r c; do
+    printf '  %-46s %s\n' "$c" "$(amixer -c "$CARD" cget "${c#*,}" 2>/dev/null | sed -n 's/^  : values=//p')"
+  done
+}
+
+cmd_revert() {
+  need_root revert
+  restore_module "$SDCA_KO"
+  restore_module "$SDWU_KO"
+  restore_module "$CDNS"
+  local m; for m in snd-sof-intel-hda-generic snd-sof-pci-intel-ptl; do
+    restore_module "$SOFDIR/$m.ko.zst"
+  done
+  local sid; sid=$(subsys_id 2>/dev/null || true)
+  if [[ -n ${sid:-} ]]; then
+    local ext p
+    while read -r name link uid; do
+      [[ -n ${name:-} ]] || continue
+      for ext in .zst .xz ''; do
+        p="$FWDIR/$sid-$link-$uid.bin$ext"
+        [[ -L $p ]] && { rm -f "$p"; ok "removed $(basename "$p")"; }
+      done
+    done < <(amps)
+  fi
+  depmod -a "$KVER"
+  undefer
+  rm -f "$DEBUG_CONF" && ok "removed $DEBUG_CONF"
+  if [[ -f $RECUNIT ]]; then
+    systemctl disable --now omnibook-speaker-report.service 2>/dev/null || true
+    rm -f "$RECUNIT" "$RECBIN"; systemctl daemon-reload
+    ok "removed the boot recorder (logs kept in $RECLOG)"
+  fi
+  say "reboot to return to stock behaviour"
+  say "userspace files under \$HOME are left alone -- remove them as your normal user"
+}
+
+case "${1:-check}" in
+  check)      cmd_check ;;
+  firmware)   cmd_firmware ;;
+  sdca)       cmd_sdca ;;
+  sdw-utils)  cmd_sdw_utils ;;
+  trace)      cmd_trace ;;
+  recorder)   cmd_recorder ;;
+  userspace)  cmd_userspace ;;
+  # the safe set: nothing here can cost the card
+  install)    need_root install
+              cmd_firmware; cmd_sdca; cmd_sdw_utils; cmd_trace; cmd_recorder
+              say ""
+              say "safe set applied.  The deferral and both module swaps were NOT touched."
+              say "Next: sudo reboot"
+              say "Then, as your normal user: $0 userspace" ;;
+  defer)      cmd_defer ;;
+  undefer)    cmd_undefer ;;
+  cadence)    cmd_cadence ;;
+  sof-order)  cmd_sof_order ;;
+  verify)     cmd_verify ;;
+  revert)     cmd_revert ;;
+  *) sed -n '2,35p' "$0"; exit 1 ;;
+esac

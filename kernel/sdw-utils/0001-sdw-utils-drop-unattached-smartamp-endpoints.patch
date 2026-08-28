@@ -1,0 +1,103 @@
+--- a/sound/soc/sdw_utils/soc_sdw_utils.c
++++ b/sound/soc/sdw_utils/soc_sdw_utils.c
+@@ -1702,6 +1702,80 @@
+ 	return ret;
+ }
+ 
++/* omnibook: how long to wait out a transient UNATTACHED before believing it */
++#define OMNIBOOK_ATTACH_SETTLE_MS 250
++
++static bool omnibook_filter_amps = true;
++module_param_named(filter_unattached_amps, omnibook_filter_amps, bool, 0444);
++MODULE_PARM_DESC(filter_unattached_amps,
++		 "omnibook: drop SmartAmp endpoints whose peripheral is off the bus (default Y)");
++
++/*
++ * omnibook: is this SmartAmp endpoint's SoundWire peripheral actually on the bus?
++ *
++ * On this board (HP OmniBook Ultra 14 / 8EB4, four TAS2783) one or more amplifiers
++ * leave the bus during the DSP firmware boot and never return.  ACPI still describes
++ * them, so they still become codec components of the aggregated SDWn-Playback-SmartAmp
++ * BE.  snd_soc_pcm_component_pm_runtime_get() walks every component and tolerates only
++ * -EACCES, and a dead amp's runtime_error is latched at -ETIMEDOUT by
++ * tas2783_sdca_dev_resume(), so pm_runtime_get_sync() returns -EINVAL and the WHOLE
++ * Speaker PCM fails to open -- including the amps that are alive with firmware loaded.
++ * Dropping the dead endpoints here lets the survivors play.
++ *
++ * Safe here and nowhere earlier: machine select runs ~160 ms BEFORE the amps die, but
++ * mc_probe -> asoc_sdw_parse_sdw_endpoints() runs ~8 s after (measured: detach
++ * 12:01:41.018597, endpoint parse ~12:01:49.12).
++ *
++ * The predicate is deliberately NOT dev->power.runtime_error: that is latched at
++ * 12:01:54.46, ~5.3 s AFTER this code runs, so it would filter nothing.  Nor is it a
++ * bare status read: healthy peripherals read UNATTACHED transiently on every link
++ * resume (observed 2.6-3.0 ms wide, at 12:01:49.166891/.167262).  So read the status,
++ * and if it is not ATTACHED wait briefly on initialization_complete -- which the core
++ * re-arms on detach and completes only on a real re-attach -- then read it again.
++ *
++ * Fail-safe: anything unexpected keeps the endpoint, so a lookup failure can never
++ * silently empty the dailink.
++ */
++static int is_sdw_amp_endpoint_attached(struct device *dev,
++					const struct snd_soc_acpi_link_adr *adr_link,
++					int adr_index)
++{
++	const char *sdw_codec_name;
++	struct device *sdw_dev;
++	struct sdw_slave *slave;
++	int ret = 1;
++
++	sdw_codec_name = _asoc_sdw_get_codec_name(dev, adr_link, adr_index);
++	if (!sdw_codec_name)
++		return 1;
++
++	sdw_dev = bus_find_device_by_name(&sdw_bus_type, NULL, sdw_codec_name);
++	if (!sdw_dev) {
++		dev_warn(dev, "omnibook: %s not found on the soundwire bus, keeping endpoint\n",
++			 sdw_codec_name);
++		return 1;
++	}
++
++	slave = dev_to_sdw_dev(sdw_dev);
++
++	if (READ_ONCE(slave->status) != SDW_SLAVE_ATTACHED) {
++		dev_dbg(dev, "omnibook: %s reads unattached, settling for %d ms\n",
++			sdw_codec_name, OMNIBOOK_ATTACH_SETTLE_MS);
++		wait_for_completion_timeout(&slave->initialization_complete,
++					    msecs_to_jiffies(OMNIBOOK_ATTACH_SETTLE_MS));
++
++		if (READ_ONCE(slave->status) != SDW_SLAVE_ATTACHED) {
++			dev_warn(dev,
++				 "omnibook: %s is off the bus, dropping its SmartAmp endpoint\n",
++				 sdw_codec_name);
++			ret = 0;
++		}
++	}
++
++	put_device(sdw_dev);
++	return ret;
++}
++
+ int asoc_sdw_parse_sdw_endpoints(struct snd_soc_card *card,
+ 				 struct snd_soc_aux_dev *soc_aux,
+ 				 struct asoc_sdw_dailink *soc_dais,
+@@ -1815,6 +1889,19 @@
+ 					}
+ 				}
+ 
++				/*
++				 * omnibook: drop SmartAmp endpoints whose peripheral has left the bus, so a
++				 * dead amplifier cannot abort the Speaker PCM open for the live ones.
++				 * Confined to AMP endpoints on purpose: the RT712 jack/mic path works and
++				 * must not be touched.  See is_sdw_amp_endpoint_attached() above.
++				 */
++				if (omnibook_filter_amps &&
++				    dai_info->dai_type == SOC_SDW_DAI_TYPE_AMP &&
++				    !is_sdw_amp_endpoint_attached(dev, adr_link, i)) {
++					(*num_devs)--;
++					continue;
++				}
++
+ 				dev_dbg(dev,
+ 					"Add dev: %d, 0x%llx end: %d, dai: %d, %c/%c to %s: %d\n",
+ 					ffs(adr_link->mask) - 1, adr_dev->adr,

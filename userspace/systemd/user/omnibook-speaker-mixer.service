@@ -1,0 +1,23 @@
+[Unit]
+Description=Restore internal TAS2783 speaker mixer state
+# Ordered AFTER the audio stack on purpose.  Session 7 observed all four DAPM pin
+# switches ("Left/Right Spk[2] Switch") turned off across a pipewire+wireplumber
+# restart, which silences the speakers while leaving the amps Attached and the
+# volumes at 200 -- so restoring before the stack starts loses the race.  The
+# script waits for the controls to exist, so running late is safe.
+After=pipewire.service wireplumber.service sound.target
+Wants=pipewire.service
+
+[Service]
+Type=oneshot
+# Bounded because the card's control interface can block in the driver: on 2026-08-27
+# the Speaker PCM was left wedged by a leaked substream and amixer/alsactl then hung in
+# uninterruptible sleep, which no timeout can kill.  Without this the unit would sit in
+# "activating" forever.  90 s comfortably covers the script's own 60 s wait for the
+# controls to appear.
+TimeoutStartSec=90
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/omnibook-speaker-mixer
+
+[Install]
+WantedBy=default.target

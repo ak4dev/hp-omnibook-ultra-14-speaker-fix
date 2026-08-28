@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Load snd_soc_tas2783_sdw once the SOF DSP has booted.
+#
+# Installed to /usr/bin by `omnibook-speaker-fix defer`, run by
+# omnibook-tas2783-late.service.  See docs/defects.md defect 3: the rationale for
+# deferring was disproven, the deferral itself has never been shown to help or hurt.
+#
+# `set -e` is deliberately absent: a timed-out wait must still fall through to the
+# modprobe rather than abort the unit.
+set -uo pipefail
+for _ in $(seq 1 150); do
+  log=$(journalctl -k -b 0 --no-pager 2>/dev/null || true)
+  grep -q "Booted firmware version" <<<"$log" && break
+  sleep 0.2
+done
+sleep 1
+exec /usr/bin/modprobe snd_soc_tas2783_sdw

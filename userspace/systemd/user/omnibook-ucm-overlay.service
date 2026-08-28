@@ -1,0 +1,19 @@
+[Unit]
+Description=Follow the TAS2783 amplifiers with the tas2783 ALSA UCM overlay
+Documentation=https://github.com/OWNER/hp-omnibook-ultra-14-speaker-fix
+After=wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# auto enables the overlay only when every TAS2783 on the SoundWire bus reports
+# Attached, and disables it again when they are gone: a Speaker device UCM offers
+# with no amplifier behind it would become a silent default sink.
+#
+# OPTIONAL.  The overlay does not currently deliver sound -- the direct PipeWire
+# node does.  See docs/ucm.md before enabling it.
+ExecStart=%h/.local/bin/omnibook-ucm-overlay auto
+
+[Install]
+WantedBy=default.target

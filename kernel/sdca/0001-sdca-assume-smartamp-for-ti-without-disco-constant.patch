@@ -1,0 +1,32 @@
+--- a/sound/soc/sdca/sdca_functions.c
++++ b/sound/soc/sdca/sdca_functions.c
+@@ -135,8 +135,27 @@
+ 	fwnode_handle_put(control5);
+ 
+ 	if (ret < 0) {
+-		dev_err(dev, "function type only supported as DisCo constant\n");
+-		return ret;
++		/*
++		 * Several HP Panther Lake platforms (and the sibling EliteBook X
++		 * chassis) describe their TI TAS2783 amplifiers with
++		 * mipi-sdca-control-access-mode 3 and no DC value at all, so the
++		 * Function type is unreadable and every amplifier is dropped —
++		 * leaving the machine with no Speaker PCM. The parts are Smart
++		 * Amps; assume that rather than discarding the endpoint. Value 1
++		 * is what a corrected BIOS supplies, and maps to SMART_AMP both
++		 * directly and through patch_sdca_function_type() below.
++		 *
++		 * Gated on the TI manufacturer id so no other peripheral's
++		 * genuinely-broken description is silently papered over.
++		 */
++		if (slave->id.mfg_id == 0x0102 && slave->id.part_id == 0x0000) {
++			dev_warn(dev,
++				 "no DisCo constant for function type, assuming SmartAmp\n");
++			function_type = 1;
++		} else {
++			dev_err(dev, "function type only supported as DisCo constant\n");
++			return ret;
++		}
+ 	}
+ 
+ 	if (!sdca_device_quirk_match(slave, SDCA_QUIRKS_SKIP_FUNC_TYPE_PATCHING)) {

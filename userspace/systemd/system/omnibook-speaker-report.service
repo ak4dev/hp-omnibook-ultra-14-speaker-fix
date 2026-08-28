@@ -1,0 +1,14 @@
+[Unit]
+Description=Record a one-screen TAS2783 speaker verdict for this boot
+After=sound.target systemd-journald.service
+
+[Service]
+Type=oneshot
+# Late enough that the card is built and the codec driver has had its say. Purely
+# read-only: if it fails, nothing else is affected.
+ExecStartPre=/usr/bin/sleep 30
+ExecStart=/usr/bin/omnibook-speaker-report
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

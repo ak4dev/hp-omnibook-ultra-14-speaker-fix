@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# One-screen verdict for this boot.  Read-only; never changes anything.
+#
+# Every experiment here costs a reboot, and the person who reboots is usually not the
+# person reading the result.  This writes one screen per boot to $LOG, world-readable,
+# so the next session can see what happened without re-deriving it from the journal.
+set -uo pipefail
+
+LOG=${OMNIBOOK_SPEAKER_LOG:-/var/log/omnibook-speaker}
+SDW=${OMNIBOOK_SDW_DIR:-/sys/bus/soundwire/devices}
+TI='0102:0000'
+
+mkdir -p "$LOG"
+id=$(date +%Y%m%d-%H%M%S)
+out=$LOG/boot-$id.txt
+k=$(journalctl -k -b 0 --no-pager 2>/dev/null || true)
+
+# The card index is not stable; resolve the sof-soundwire card by ID.
+card=$(sed -n 's/^ *\([0-9]\+\) \[sofsoundwire *\].*/\1/p' /proc/asound/cards 2>/dev/null | head -1)
+
+{
+  echo "boot        $id   kernel $(uname -r)   uptime $(cut -d' ' -f1 /proc/uptime)s"
+  echo "card        sofsoundwire = card ${card:-<absent>}"
+  echo
+  echo "== amplifiers =="
+  for d in "$SDW"/sdw:0:*; do
+    [[ -e $d/status ]] || continue
+    printf '  %-32s %-11s rt=%s\n' \
+      "$(basename "$d")" \
+      "$(cat "$d/status")" \
+      "$(cat "$d/power/runtime_status" 2>/dev/null)"
+  done
+  echo
+  echo "== verdict =="
+  n=$(ls -d "$SDW"/sdw:0:*:"$TI":* 2>/dev/null | wc -l)
+  up=$(grep -lx Attached "$SDW"/sdw:0:*:"$TI":*/status 2>/dev/null | wc -l)
+  printf '  %-42s %s of %s\n' 'amps attached' "$up" "$n"
+  printf '  %-42s %s\n' 'speaker PCM' "$(aplay -l 2>/dev/null | grep -c 'device 2: Speaker')"
+  # There is no /proc/asound/card*/components on this kernel; the string lives in the
+  # ALSA card info, which `amixer info` reads without needing a PipeWire session.
+  printf '  %-42s %s\n' 'cfg-amp' \
+    "$(amixer -c "${card:-0}" info 2>/dev/null | grep -o 'cfg-amp:[0-9]*' | head -1)"
+  # One counted marker per line.  The array form matters: the old version of this
+  # script built the pattern list with line continuations inside a single-quoted
+  # for-list, so the patterns split on whitespace and every report came out as a
+  # meaningless two-column word salad.
+  patterns=(
+    'assuming SmartAmp'
+    'Found Smart Amp'
+    'Direct firmware load'
+    'FW download failed'
+    'fw with no files'
+    'error playback without fw'
+    'Slave status change: 0x110'
+    'still UNATTACHED, rescan'
+    'Slave attached, programming device number'
+    'state check1: UNATTACHED'
+    'dropping its SmartAmp endpoint'
+  )
+  for pat in "${patterns[@]}"; do
+    printf '  %-42s %s\n' "$pat" "$(grep -c -- "$pat" <<<"$k")"
+  done
+  echo
+  echo "== first 60 audio lines =="
+  grep -iE 'tas2783|soundwire|sdw|sof-audio|sdca|Speaker' <<<"$k" | head -60
+} > "$out" 2>&1
+
+chmod 0644 "$out"
+ln -sfn "$(basename "$out")" "$LOG/latest.txt"
+# Keep the last 20 boots; these are a few KB each.
+ls -1t "$LOG"/boot-*.txt 2>/dev/null | tail -n +21 | xargs -r rm -f

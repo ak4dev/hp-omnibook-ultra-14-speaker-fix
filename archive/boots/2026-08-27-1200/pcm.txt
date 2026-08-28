@@ -1,0 +1,94 @@
+**** List of PLAYBACK Hardware Devices ****
+card 0: X [PRO X], device 0: USB Audio [USB Audio]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: sofsoundwire [sof-soundwire], device 0: Jack Out (*) []
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: sofsoundwire [sof-soundwire], device 2: Speaker (*) []
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: sofsoundwire [sof-soundwire], device 5: HDMI1 (*) [Odyssey G8]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: sofsoundwire [sof-soundwire], device 6: HDMI2 (*) [HDMI 2]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: sofsoundwire [sof-soundwire], device 7: HDMI3 (*) [HDMI 3]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: sofsoundwire [sof-soundwire], device 31: Deepbuffer Jack Out (*) []
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+Card sysdefault:1 'sofsoundwire'/'HP-HPOmniBookUltraLaptop14_kd0xxx-Type1ProductConfigId-8EB4'
+  Mixer name	: 'Intel Panther Lake HDMI'
+  Components	: 'HDA:80862822,80860101,00100000  cfg-amp:4 iec61937-pcm:7,6,5 hs:rt712 mic:rt712'
+  Controls      : 67
+  Simple ctrls  : 37
+numid=26,iface=CARD,name='HDMI/DP,pcm=5 Jack'
+numid=32,iface=CARD,name='HDMI/DP,pcm=6 Jack'
+numid=38,iface=CARD,name='HDMI/DP,pcm=7 Jack'
+numid=24,iface=CARD,name='Headphone Jack'
+numid=25,iface=CARD,name='Headset Mic Jack'
+numid=22,iface=MIXER,name='Headphone Switch'
+numid=60,iface=MIXER,name='Microphone Capture DRC bytes'
+numid=61,iface=MIXER,name='Microphone Capture DRC switch'
+numid=62,iface=MIXER,name='Microphone Capture IIR Eq'
+numid=59,iface=MIXER,name='Microphone Capture TDFB angle set enum'
+numid=58,iface=MIXER,name='Microphone Capture TDFB beam switch'
+numid=57,iface=MIXER,name='Microphone Capture TDFB bytes'
+numid=27,iface=MIXER,name='IEC958 Playback Con Mask'
+numid=33,iface=MIXER,name='IEC958 Playback Con Mask',index=1
+numid=39,iface=MIXER,name='IEC958 Playback Con Mask',index=2
+numid=28,iface=MIXER,name='IEC958 Playback Pro Mask'
+numid=34,iface=MIXER,name='IEC958 Playback Pro Mask',index=1
+numid=40,iface=MIXER,name='IEC958 Playback Pro Mask',index=2
+numid=29,iface=MIXER,name='IEC958 Playback Default'
+numid=35,iface=MIXER,name='IEC958 Playback Default',index=1
+numid=41,iface=MIXER,name='IEC958 Playback Default',index=2
+numid=30,iface=MIXER,name='IEC958 Playback Switch'
+numid=36,iface=MIXER,name='IEC958 Playback Switch',index=1
+numid=42,iface=MIXER,name='IEC958 Playback Switch',index=2
+numid=23,iface=MIXER,name='Headset Mic Switch'
+numid=55,iface=MIXER,name='Jack In Capture IIR Eq'
+numid=18,iface=MIXER,name='Left Spk Switch'
+numid=20,iface=MIXER,name='Left Spk2 Switch'
+numid=54,iface=MIXER,name='Post Mixer Jack Out Playback Volume'
+numid=51,iface=MIXER,name='Post Mixer Speaker Playback DRC bytes'
+numid=52,iface=MIXER,name='Post Mixer Speaker Playback DRC switch'
+numid=50,iface=MIXER,name='Post Mixer Speaker Playback FIR Eq bytes'
+numid=49,iface=MIXER,name='Post Mixer Speaker Playback IIR Eq bytes'
+numid=48,iface=MIXER,name='Post Mixer Speaker Playback Volume'
+numid=56,iface=MIXER,name='Pre Mixer Deepbuffer Jack Out Volume'
+numid=53,iface=MIXER,name='Pre Mixer Jack Out Playback Volume'
+numid=47,iface=MIXER,name='Pre Mixer Speaker Playback Volume'
+numid=19,iface=MIXER,name='Right Spk Switch'
+numid=21,iface=MIXER,name='Right Spk2 Switch'
+numid=66,iface=MIXER,name='rt712 ADC 0A Mux'
+numid=67,iface=MIXER,name='rt712 ADC 0B Mux'
+numid=63,iface=MIXER,name='rt712 ADC 23 Mux'
+numid=14,iface=MIXER,name='rt712 FU05 Playback Switch'
+numid=10,iface=MIXER,name='rt712 FU05 Playback Volume'
+numid=9,iface=MIXER,name='rt712 FU06 Playback Volume'
+numid=11,iface=MIXER,name='rt712 FU0F Capture Switch'
+numid=12,iface=MIXER,name='rt712 FU0F Capture Volume'
+numid=17,iface=MIXER,name='rt712 FU15 Boost Volume'
+numid=15,iface=MIXER,name='rt712 FU1E Capture Switch'
+numid=16,iface=MIXER,name='rt712 FU1E Capture Volume'
+numid=13,iface=MIXER,name='rt712 FU44 Boost Volume'
+numid=64,iface=MIXER,name='rt712 OT23 L Switch'
+numid=65,iface=MIXER,name='rt712 OT23 R Switch'
+numid=1,iface=MIXER,name='tas2783-1 Amp Volume'
+numid=2,iface=MIXER,name='tas2783-1 Speaker Volume'
+numid=3,iface=MIXER,name='tas2783-2 Amp Volume'
+numid=4,iface=MIXER,name='tas2783-2 Speaker Volume'
+numid=5,iface=MIXER,name='tas2783-3 Amp Volume'
+numid=6,iface=MIXER,name='tas2783-3 Speaker Volume'
+numid=7,iface=MIXER,name='tas2783-4 Amp Volume'
+numid=8,iface=MIXER,name='tas2783-4 Speaker Volume'
+numid=31,iface=PCM,name='ELD',device=5
+numid=44,iface=PCM,name='Playback Channel Map',device=5
+numid=37,iface=PCM,name='ELD',device=6
+numid=45,iface=PCM,name='Playback Channel Map',device=6
+numid=43,iface=PCM,name='ELD',device=7
+numid=46,iface=PCM,name='Playback Channel Map',device=7

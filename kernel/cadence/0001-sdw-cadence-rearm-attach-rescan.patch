@@ -1,0 +1,118 @@
+--- a/drivers/soundwire/cadence_master.h
++++ b/drivers/soundwire/cadence_master.h
+@@ -120,6 +120,8 @@
+  * @dai_runtime_array: runtime context for each allocated DAI.
+  * @status_update_lock: protect concurrency between interrupt-based and delayed work
+  * status update
++ * @attach_retries: number of times the attach_dwork rescan has been re-armed
++ * since the bus was last started
+  */
+ struct sdw_cdns {
+ 	struct device *dev;
+@@ -149,6 +151,7 @@
+ 	bool link_up;
+ 	unsigned int msg_count;
+ 	bool interrupt_enabled;
++	u8 attach_retries;
+ 
+ 	struct work_struct work;
+ 	struct delayed_work attach_dwork;
+--- a/drivers/soundwire/cadence_master.c
++++ b/drivers/soundwire/cadence_master.c
+@@ -1004,6 +1004,53 @@
+ }
+ EXPORT_SYMBOL(sdw_cdns_irq);
+ 
++/*
++ * A peripheral can fall off the bus after it has been enumerated, e.g. when
++ * the link is reset while the host DSP is brought up. The Cadence IP only
++ * reports *changes* of peripheral status, and the status of every peripheral
++ * is folded into a single interrupt with a logical AND, so a re-attach which
++ * happens while the manager interrupt is masked, or while another status
++ * change is being processed, is never reported again: the peripheral stays
++ * UNATTACHED forever and no rescan is left to notice it.
++ *
++ * The delayed work below is the only rescan of the PING status and it is
++ * scheduled exactly once per bus start. Re-arm it, bounded, while at least
++ * one peripheral which has already been assigned a device number is
++ * UNATTACHED. A peripheral described by firmware but not fitted never gets a
++ * device number, so it never causes a rescan.
++ */
++#define CDNS_ATTACH_RETRY_DELAY_MS	250
++#define CDNS_ATTACH_MAX_RETRIES		20
++
++static bool cdns_peripheral_missing(struct sdw_cdns *cdns)
++{
++	struct sdw_bus *bus = &cdns->bus;
++	struct sdw_slave *slave;
++	bool missing = false;
++
++	mutex_lock(&bus->bus_lock);
++	list_for_each_entry(slave, &bus->slaves, node) {
++		if (slave->dev_num_sticky &&
++		    slave->status == SDW_SLAVE_UNATTACHED) {
++			missing = true;
++			break;
++		}
++	}
++	mutex_unlock(&bus->bus_lock);
++
++	return missing;
++}
++
++static void cdns_arm_attach_check(struct sdw_cdns *cdns)
++{
++	if (cdns->attach_retries >= CDNS_ATTACH_MAX_RETRIES)
++		return;
++
++	cdns->attach_retries++;
++	schedule_delayed_work(&cdns->attach_dwork,
++			      msecs_to_jiffies(CDNS_ATTACH_RETRY_DELAY_MS));
++}
++
+ static void cdns_check_attached_status_dwork(struct work_struct *work)
+ {
+ 	struct sdw_cdns *cdns =
+@@ -1027,6 +1074,20 @@
+ 	mutex_unlock(&cdns->status_update_lock);
+ 	if (ret < 0)
+ 		dev_err(cdns->dev, "%s: sdw_handle_slave_status failed: %d\n", __func__, ret);
++
++	if (!cdns_peripheral_missing(cdns))
++		return;
++
++	if (cdns->attach_retries >= CDNS_ATTACH_MAX_RETRIES) {
++		dev_warn(cdns->dev,
++			 "%s: peripheral still UNATTACHED after %d rescans, giving up\n",
++			 __func__, cdns->attach_retries);
++		return;
++	}
++
++	dev_dbg(cdns->dev, "%s: peripheral still UNATTACHED, rescan %d\n",
++		__func__, cdns->attach_retries + 1);
++	cdns_arm_attach_check(cdns);
+ }
+ 
+ /**
+@@ -1111,6 +1172,13 @@
+ 	cdns_updatel(cdns, CDNS_MCP_INTMASK,
+ 		     CDNS_MCP_INT_SLAVE_MASK, CDNS_MCP_INT_SLAVE_MASK);
+ 
++	/*
++	 * If this status change left a previously enumerated peripheral
++	 * UNATTACHED, arm the rescan: the hardware will not report the
++	 * re-attach on its own if it is folded into another status change.
++	 */
++	if (cdns_peripheral_missing(cdns))
++		cdns_arm_attach_check(cdns);
+ }
+ 
+ /* paranoia check to make sure self-cleared bits are indeed cleared */
+@@ -1253,6 +1321,7 @@
+ 		cdns_writel(cdns, CDNS_MCP_SLAVE_INTSTAT1, slave_state);
+ 	}
+ 	cdns->interrupt_enabled = state;
++	cdns->attach_retries = 0;
+ 
+ 	/*
+ 	 * Complete any on-going status updates before updating masks,

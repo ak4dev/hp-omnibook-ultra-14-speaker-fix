@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# alsa-ucm-conf has no tas2783 profile, so a card whose only amplifiers are TI TAS2783
+# SoundWire parts gets no Speaker device and therefore no speaker sink, even once the
+# amplifiers are alive.  This installs one, for this user only.
+#
+# >>> OPTIONAL, AND NOT WHAT DELIVERS SOUND TODAY. <<<
+# On the reference machine the working sink is the direct PipeWire node in
+# userspace/pipewire/, not this overlay: PipeWire's ACP layer builds no HiFi profile
+# for the card at all, and that failure is currently PROTECTIVE.  Read docs/ucm.md
+# before enabling.
+#
+# No root anywhere.  alsa-lib 1.2.16.1 treats $ALSA_CONFIG_UCM2 as a complete
+# replacement for /usr/share/alsa/ucm2, so the built tree is a SYMLINK FARM of the
+# stock tree with only the overridden files real.  Every other file follows the
+# package, so an alsa-ucm-conf upgrade is picked up without rebuilding; only a NEW
+# stock file needs a `build`.  `status` says when the farm has drifted.
+#
+# Why each override exists is written at the top of each file under userspace/ucm/.
+set -euo pipefail
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+OVERLAY="${OMNIBOOK_UCM_SRC:-$HERE/../userspace/ucm}"
+TREE="${OMNIBOOK_UCM_TREE:-${XDG_DATA_HOME:-$HOME/.local/share}/omnibook-speaker-fix/ucm2}"
+STOCK="${OMNIBOOK_UCM_STOCK:-/usr/share/alsa/ucm2}"
+ENVD="$HOME/.config/environment.d/60-omnibook-ucm.conf"
+# By ID, never by index: the index moves depending on what else is present at boot.
+CARD="${OMNIBOOK_SPEAKER_CARD:-sofsoundwire}"
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'omnibook-ucm-overlay: %s\n' "$*" >&2; exit 1; }
+
+build() {
+    [[ -d $STOCK ]] || die "no $STOCK -- is alsa-ucm-conf installed?"
+    [[ -d $OVERLAY ]] || die "no overlay sources at $OVERLAY"
+    rm -rf "$TREE"
+    mkdir -p "$TREE"
+    # Rebuild the tree by hand rather than with `cp -rs`: cp rewrites the stock
+    # RELATIVE symlinks (conf.d/sof-soundwire/sof-soundwire.conf ->
+    # ../../sof-soundwire/sof-soundwire.conf) into absolute paths back into /usr, so
+    # the card's entry point would resolve to the stock file and every override here
+    # would be silently ignored.  Directories are real, stock symlinks are copied
+    # verbatim so they keep resolving inside the farm, and only regular files become
+    # links into the package.
+    ( cd "$STOCK" && find . -mindepth 1 -print0 ) | while IFS= read -r -d '' rel; do
+        rel=${rel#./}
+        if   [[ -L $STOCK/$rel ]]; then cp -P "$STOCK/$rel" "$TREE/$rel"
+        elif [[ -d $STOCK/$rel ]]; then mkdir -p "$TREE/$rel"
+        else ln -sfn "$STOCK/$rel" "$TREE/$rel"
+        fi
+    done
+    # Our overrides must be real files, not links, or we would write into /usr.
+    ( cd "$OVERLAY" && find . -type f -print0 ) | while IFS= read -r -d '' f; do
+        rm -f "$TREE/$f"
+        install -Dm644 "$OVERLAY/$f" "$TREE/$f"
+    done
+    say "built $TREE (symlink farm of $STOCK + $(cd "$OVERLAY" && find . -type f | wc -l) overrides)"
+}
+
+# Every device UCM offers for the card, one per line.
+devices() { ALSA_CONFIG_UCM2="$TREE" alsaucm -c "hw:$CARD" list _devices/HiFi 2>/dev/null |
+            sed -n 's/^  [0-9]*: //p'; }
+
+# The same, from the STOCK tree.  `env -u` is load-bearing: once the overlay is
+# enabled, ALSA_CONFIG_UCM2 is in the user manager's environment and therefore in every
+# shell that runs this script, so a bare `alsaucm` reads the OVERLAY and the comparison
+# in check() comes out empty -- no gains reported, and, far worse, the "does the overlay
+# lose a stock device?" assertion compares the tree against itself and can never fire.
+stock_devices() { env -u ALSA_CONFIG_UCM2 alsaucm -c "hw:$CARD" list _devices/HiFi 2>/dev/null |
+                  sed -n 's/^  [0-9]*: //p'; }
+
+check() {
+    ALSA_CONFIG_UCM2="$TREE" alsaucm -c "hw:$CARD" dump text >/dev/null 2>&1 ||
+        die "the overlay tree does not parse for card $CARD"
+    local stock_n our_n missing
+    stock_n=$(stock_devices | sort)
+    our_n=$(devices | sort)
+    # Every stock device must survive; that is the whole safety question.
+    missing=$(comm -23 <(printf '%s\n' "$stock_n") <(printf '%s\n' "$our_n"))
+    [[ -z $missing ]] || die "overlay LOSES stock devices: $(tr '\n' ' ' <<<"$missing")"
+    comm -13 <(printf '%s\n' "$stock_n") <(printf '%s\n' "$our_n") | sed 's/^/  gains: /'
+}
+
+status() {
+    printf 'card      %s\n' "$CARD"
+    printf 'tree      %s\n' "$([[ -d $TREE ]] && echo "$TREE" || echo '(not built)')"
+    if [[ -d $TREE ]]; then
+        local drift
+        drift=$(comm -13 <(cd "$TREE" && find . -type f -o -type l | sort) \
+                         <(cd "$STOCK" && find . -type f | sort) | wc -l)
+        printf 'drift     %s stock file(s) missing from the farm%s\n' "$drift" \
+               "$([[ $drift -gt 0 ]] && echo ' -- run: omnibook-ucm-overlay build')"
+    fi
+    printf 'env file  %s\n' "$([[ -f $ENVD ]] && echo "$ENVD (enabled)" || echo '(disabled)')"
+    printf 'live env  %s\n' "$(systemctl --user show-environment 2>/dev/null | sed -n 's/^ALSA_CONFIG_UCM2=//p' || true)"
+    printf 'devices   %s\n' "$(devices | tr '\n' ' ')"
+}
+
+# enable/disable both restart wireplumber, which is a WEDGE RISK: restarting the audio
+# stack while the speaker node holds the PCM is what wedged it in session 7, recoverable
+# only by a reboot.  To change the overlay's CONTENT, edit userspace/ucm/ and run
+# `build` -- that touches no services and lands at the next card creation.
+enable() {
+    [[ -d $TREE ]] || build
+    check
+    mkdir -p "$(dirname "$ENVD")"
+    printf 'ALSA_CONFIG_UCM2=%s\n' "$TREE" > "$ENVD"
+    systemctl --user set-environment "ALSA_CONFIG_UCM2=$TREE"
+    systemctl --user restart wireplumber 2>/dev/null || true
+    say "enabled: $ENVD"
+}
+
+disable() {
+    rm -f "$ENVD"
+    systemctl --user unset-environment ALSA_CONFIG_UCM2 2>/dev/null || true
+    systemctl --user restart wireplumber 2>/dev/null || true
+    say "disabled (tree left at $TREE)"
+}
+
+# Are the amplifiers actually alive?  A Speaker device that UCM offers but no amplifier
+# answers becomes a silent default sink, which is strictly worse than having no speaker
+# sink at all -- so the overlay is only enabled once the card can really make a noise.
+#
+# Gated on "this card can make a noise", not "all four amplifiers are healthy": the
+# endpoint filter in the patched snd-soc-sdw-utils.ko drops UNATTACHED amps from the
+# SmartAmp DAI link, so on the reference machine two of the four are permanently
+# UNATTACHED *and the speakers still work* -- an all-four gate would keep it off forever.
+#
+# Two conditions, both necessary:
+#   1. at least one TAS2783 is Attached AND not stuck in PM error.  "Attached" alone is
+#      insufficient: tas2783_sdca_dev_resume() returns -ETIMEDOUT for an unattached
+#      peripheral, rpm_callback() latches that into dev->power.runtime_error, and nothing
+#      in the SoundWire core ever clears it -- sdw_handle_slave_status()'s attach path
+#      only calls pm_request_resume() (bus.c:2015), which returns -EINVAL straight off
+#      the latch.  So an amp can re-attach, read "Attached", and still abort the whole
+#      Speaker PCM open with -22.  Observed on the 2026-08-27 12:00 boot.
+#   2. the card actually exposes a Speaker PCM.  When every amp is lost, sof_sdw.c:930
+#      drops the dailink and there is no Speaker PCM at all -- that is the case this
+#      gate exists to keep off, and it is the honest test for it.
+#
+# Deliberately not an aplay/speaker-test probe: the Speaker PCM is 2ch/48000 only so a
+# default-parameter open fails on a healthy card, and an -EBUSY from WirePlumber would
+# read as "dead" and tear a working overlay down.
+amps_up() {
+    local d up=0
+    for d in /sys/bus/soundwire/devices/sdw:*:0102:0000:*; do
+        [[ -e $d/status ]] || continue
+        [[ $(cat "$d/status") == Attached ]] || continue
+        [[ $(cat "$d/power/runtime_status" 2>/dev/null) == error ]] && continue
+        up=$((up + 1))
+    done
+    (( up > 0 )) || return 1
+    grep -q 'Speaker' "/proc/asound/$CARD/pcm2p/info" 2>/dev/null
+}
+
+# Called from the user unit at session start: follow the hardware.
+auto() {
+    if amps_up; then
+        [[ -f $ENVD ]] && { say "already enabled"; return 0; }
+        say "amplifiers attached -- enabling the tas2783 UCM overlay"
+        enable
+    else
+        [[ -f $ENVD ]] || { say "amplifiers not attached -- overlay stays off"; return 0; }
+        say "amplifiers not attached -- disabling the tas2783 UCM overlay"
+        disable
+    fi
+}
+
+case "${1:-status}" in
+    build)   build ;;
+    check)   check ;;
+    enable)  enable ;;
+    disable) disable ;;
+    status)  status ;;
+    auto)    auto ;;
+    *) die "usage: $0 {build|check|enable|disable|auto|status}" ;;
+esac
