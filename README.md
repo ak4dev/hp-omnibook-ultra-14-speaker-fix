@@ -1,5 +1,12 @@
 # HP OmniBook Ultra Laptop 14 — internal speakers on Linux (TAS2783 / SoundWire)
 
+> ### ⚠️ Incomplete fix: left speaker only
+> This restores sound from the **left-hand speaker pair only**. The right-hand pair cannot
+> be recovered by anything in this repo — it is a separate, unfixed kernel/hardware defect
+> (see [defect 4](docs/defects.md#defect-4--the-amplifiers-leave-the-bus-and-never-return-worked-around-not-fixed)).
+> Applying this fix does **not** restore stereo sound. Read "What you get, honestly" below
+> before you start.
+
 **Symptom:** the laptop's internal speakers produce nothing on Linux. There is no
 `Speaker` ALSA device at all, `pactl` offers no speaker sink, the sound card sits at
 profile `off` with a null sink, and the kernel log carries:
